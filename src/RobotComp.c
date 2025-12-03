@@ -1,9 +1,8 @@
 /************************************************
  * Team 18: A. Jacobs L. DeLussy
- * Line sensing and forward motion, 11/14/25
+ * Robot competiton!!! 12/5/2025
  * NucleoF466RE CMSIS STM32F4xx
  */
-
 #include "stm32f4xx.h"
 #include "UART2.h"
 #include <stdio.h>
@@ -18,7 +17,7 @@
 #define IR_SENSOR3 2 // PC2
 #define IR_SENSOR4  3 // PC3
 #define IR_PORT   GPIOC
-#define SERVO3_PIN    (6) // Assuming servo motor 3 control pin is connected to GPIOC pin 6
+#define SERVO3_PIN    (8) // Assuming servo motor 3 control pin is connected to GPIOC pin 6
 #define SERVO3_PORT   (GPIOC)
 #define SERVO1_PIN    (9) // Assuming servo motor 4 control pin is connected to GPIOC pin 8
 #define SERVO1_PORT   (GPIOC)
@@ -34,17 +33,18 @@
 
 volatile uint8_t digitSelect = 0;
 bool pause = false;
-bool Passed_first_Line = false;
+//bool Passed_first_Line = false;
 volatile int IRSensorReading = 0;
 int IR_Reading_Binary = 0;
 int pulse_width_2 = 1500; // Default pulse width for servos
 int pulse_width_1 = 1500; // Default pulse width for servos
+int phase = 0; //0 = line following mode 1 = Ultrasonic radar mode
 
 void PWM_Output_PC6_PC8_Init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_TIM8EN; // Enable clock for TIM8
     TIM8->PSC = 15; // 16 MHz / 16 = ~1 MHz (verify timer clock)
     TIM8->ARR = 19999; // Period for 50 Hz
-    TIM8->CCR1 = 1500; // Duty cycle (1.5 ms center pulse)
+    TIM8->CCR3 = 1500; // Duty cycle (1.5 ms center pulse)
     TIM8->CCR4 = 1500; // Duty cycle (1.5 ms center pulse)
 
     // configure channel1 for PWM mode 1 with preload
@@ -53,11 +53,15 @@ void PWM_Output_PC6_PC8_Init(void) {
     TIM8->CCMR1 |= TIM_CCMR1_OC1PE; // Preload enable
 
     TIM8->CCMR2 &= ~(0xFFU); // clear OC4M + OC4PE fields
+
+    TIM8->CCMR2 |= (6U << TIM_CCMR2_OC3M_Pos); // PWM mode 1 (OC4M = 110)
+    TIM8->CCMR2 |= TIM_CCMR2_OC3PE; // Preload enable
+
     TIM8->CCMR2 |= (6U << TIM_CCMR2_OC4M_Pos); // PWM mode 1 (OC4M = 110)
     TIM8->CCMR2 |= TIM_CCMR2_OC4PE; // Preload enable
 
-    TIM8->CCER &= ~TIM_CCER_CC1P; // active high (optional)
-    TIM8->CCER |= TIM_CCER_CC1E; // Enable CH1 output (PC6)
+    TIM8->CCER &= ~TIM_CCER_CC3P; // active high (optional)
+    TIM8->CCER |= TIM_CCER_CC3E; // Enable CH3 output (PC8)
     
     TIM8->CCER &= ~TIM_CCER_CC4P; // active high (optional)
     TIM8->CCER |= TIM_CCER_CC4E; // Enable CH4 output (PC9)
@@ -69,10 +73,10 @@ void PWM_Output_PC6_PC8_Init(void) {
     TIM8->BDTR |= TIM_BDTR_MOE; // Main output enable
     TIM8->CR1 |= TIM_CR1_CEN; // Enable timer
 
-    GPIOC->MODER &= ~(0x3 << (6 * 2)); // clear mode bits for PC6
-	GPIOC->MODER |=  (0x2 << (6 * 2)); // Alternate function
-	GPIOC->AFR[0] &= ~(0xF << (6 * 4)); // clear AF bits for PC6
-	GPIOC->AFR[0] |=  (0x3 << (6 * 4)); // AF3 (TIM8) for PC6
+    GPIOC->MODER &= ~(0x3 << (8 * 2)); // clear mode bits for PC8
+	GPIOC->MODER |=  (0x2 << (8 * 2)); // Alternate function
+	GPIOC->AFR[1] &= ~(0xF << (0 * 4)); // clear AF bits for PC8
+	GPIOC->AFR[1] |=  (0x3 << (0 * 4)); // AF3 (TIM8) for PC8
     
     GPIOC->MODER &= ~(0x3 << (9 * 2)); // Clear mode bits for PC9
     GPIOC->MODER |=  (0x2 << (9 * 2)); // Set PC9 to Alternate Function mode
@@ -153,6 +157,7 @@ void IR_cases(int sensor){
         case 15:
                 pulse_width_1 = 1500; 
                 pulse_width_2 = 1500; 
+                pause = true;
             break;
         case 14: // slight right
         //for (int i = 0; i < 1333333; i++); //potential problem
@@ -197,7 +202,7 @@ void IR_cases(int sensor){
 void SysTick_Handler(void){
     read_IRSensor();
     IR_cases(IRSensorReading);
-    TIM8->CCR1 = pulse_width_1; // Update servo 3 pulse width
+    TIM8->CCR3 = pulse_width_1; // Update servo 3 pulse width
     TIM8->CCR4 = pulse_width_2; // Update servo 4 pulse width
 
 }
