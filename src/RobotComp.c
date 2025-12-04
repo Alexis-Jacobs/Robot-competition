@@ -55,6 +55,7 @@ volatile uint32_t EchoStart = 0; //echo goes low to high
 volatile uint32_t EchoEnd = 0; //echo goes high to low
 volatile uint32_t EchoWidth = 0; //timing from rise to fall, captured
 float distance = 0; //distance in cm
+int direction = 0; //-1 = left, 0 = forward, 1 = right
 bool unit = true; //true = cm, false = inches
 int didgit = 0; // for ssd display
 int angle = 0; //for servo control
@@ -62,17 +63,27 @@ volatile uint32_t pulse_width = 0; //servo pulse width
 int time = 0;
 int time_ms = 0;
 
-#define RADAR_IDLE        0
-#define RADAR_TRIGGER     1
-#define RADAR_WAIT_HIGH   2
-#define RADAR_WAIT_LOW    3
-#define RADAR_SCAN_RIGHT  4
-#define RADAR_SCAN_LEFT   5
-#define RADAR_DECIDE      6
-#define PARK   7
-int radar_state = RADAR_IDLE;
+
+#define STATE_LINE 0
+#define STATE_SCAN_RIGHT 1
+#define STATE_SCAN_LEFT 2
+#define STATE_DECIDE 3
+#define STATE_TURN 4
+
+int state = STATE_LINE;
 
 uint32_t t0;
+
+void delay_us(uint32_t us) {
+    uint32_t start = TIM5->CNT;
+    while ((TIM5->CNT - start) < us);
+}
+
+void delay_ms(uint32_t ms) {
+    while (ms--) {
+        delay_us(1000);
+    }
+}
 
 void PWM_Output_PC6_PC8_Init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_TIM8EN; // Enable clock for TIM8
@@ -156,6 +167,20 @@ void btn_init(void){
 	NVIC_EnableIRQ(EXTI15_10_IRQn); // Enable EXTI line[15:10] interrupts in NVIC
 }
 
+void EXTI0_init(void){
+    GPIOB->MODER &= ~(3<<ECHO_PIN); //PB0 as input
+    EXTI->IMR |= (1<<ECHO_PIN); //unmask interrupt for EXTI0
+    EXTI->RTSR |= (1<<ECHO_PIN); //trigger on rising edge
+    EXTI->FTSR |= (1<<ECHO_PIN); //trigger on falling edge
+    SYSCFG->EXTICR[0] &= ~(0xF<<0); //clear EXTI0 bits
+    SYSCFG->EXTICR[0] |= (1<<0); //map EXTI0 to PB0
+    GPIOB->PUPDR &= ~(3<< (ECHO_PIN*2)); //clear pull-up, pull-down
+    GPIOB->PUPDR |= (2<< (ECHO_PIN*2)); //pull-down on PB0
+
+    NVIC_EnableIRQ(EXTI0_IRQn); //enable EXTI0 interrupt in NVIC
+    NVIC_SetPriority(EXTI0_IRQn, 0); //set priority
+}
+
 void Sensor_Init(void){
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN; // Enable GPIOC clock
     IR_PORT->MODER &= ~((0x3 << (IR_SENSOR1 * 2)) | (0x3 << (IR_SEONSOR2 * 2)) | (0x3 << (IR_SENSOR3 * 2)) | (0x3 << (IR_SENSOR4 * 2))); // Set PC0-PC3 as input
@@ -188,12 +213,26 @@ void servo_angle_set(int angle) {
 	pulse_width = 1500 - (500 * (angle/45.0)); // calculate pulse width for angle (-45 to 45 degrees) 500us per 45 degrees
 	TIM3->CCR1 = pulse_width;
 }
+/*
+void EXTI0_IRQHandler(void){
+   if(EXTI->PR & (1<< ECHO_PIN)){ //check if interrupt is from echo pin
+        if(ECHO_PORT->IDR & (1<< ECHO_PIN)){ //rising edge
+            EchoStart = TIM5->CNT; //capture start time
+        } else { //falling edge
+            EchoEnd = TIM5->CNT; //capture end time
+            EchoWidth = EchoEnd - EchoStart;
+            distance = (unit) ? (EchoWidth * 0.01715) : (EchoWidth * 0.00675); //distance in cm or inches
+        }
+        if (distance > 99.99) distance = 99.99; //cap at 99.99 cm or inches
+        EXTI->PR |= (1<< ECHO_PIN); //clear pending interrupt flag by writing 1 to it
+    }
+}*/
 
 void TIM2_IRQHandler(void){
     if(TIM2->SR & TIM_SR_UIF){ //check if update interrupt flag is set
         TIM2->SR &= ~TIM_SR_UIF; //clear the interrupt flag
         digitSelect = (digitSelect + 1) % 4; //cycle through digits 0-3
-        if (pause == false){
+    if (pause == false){
         time_ms ++;
         if (time_ms >= 10){
             time_ms = 0;
@@ -225,80 +264,41 @@ void EXTI15_10_IRQHandler(void){
 		pause = !pause; // Toggle pause state
 	}
 }
-/*
-void radar_update(void){
-    switch(radar_state){
-        case RADAR_TRIGGER:
-            TRIG_PORT->ODR |= (1 << TRIG_PIN); //set trigger high
-            t0 = TIM5->CNT;
-            radar_state = RADAR_WAIT_HIGH;
-            break;
-        
-        case RADAR_WAIT_HIGH:
-            if((TIM5->CNT - t0) >= 10){
-                TRIG_PORT->ODR &= ~(1 << TRIG_PIN); //set trigger low
-            }
-            if(ECHO_PORT->IDR & (1<< ECHO_PIN)){ //wait for echo to go high
-                EchoStart = TIM5->CNT;
-                radar_state = RADAR_WAIT_LOW;
-            }
-            break;
 
-        case RADAR_WAIT_LOW:
-            if(!(ECHO_PORT->IDR & (1<< ECHO_PIN))){ //wait for echo to go low
-                EchoEnd = TIM5->CNT;
-                //calculate echo width
-                if(EchoEnd >= EchoStart){
-                    EchoWidth = EchoEnd - EchoStart;
-                } else { //handle timer overflow
-                    EchoWidth = (0xFFFFFFFF - EchoStart) + EchoEnd;
-                }
+int measure(void){
+    TRIG_PORT->ODR |= (1 << TRIG_PIN); //set trigger high
+    delay_us(10);
+    TRIG_PORT->ODR &= ~(1 << TRIG_PIN); //set trigger low
 
-                servo_angle_set(-45);
+    while(!(ECHO_PORT->IDR & (1<< ECHO_PIN))); //wait for echo to go high
 
-                left_distance = EchoWidth * 0.01715; //distance in cm
-                
-                t0= TIM5->CNT;
+    uint32_t start = TIM5->CNT;
 
-                radar_state = RADAR_SCAN_RIGHT;
-            }
-            break;
-        case RADAR_SCAN_RIGHT:
-            if((TIM5->CNT - t0) >= 500000){ //wait 500ms
-                servo_angle_set(45);
-                right_distance = EchoWidth * 0.01715; //distance in cm
-                t0 = TIM5->CNT;
-                radar_state = RADAR_DECIDE;
-            }
-            break;
-        case RADAR_DECIDE:
-        t0 = TIM5->CNT;
-            if(right_distance > left_distance && (TIM5->CNT) - t0 <= 500000){
-                //turn right
-                pulse_width_1 = 1510; 
-                pulse_width_2 = 1430; 
-            } else if (left_distance > right_distance && (TIM5->CNT) - t0 <= 500000){
-                //turn left
-                pulse_width_1 = 1475.20; 
-                pulse_width_2 = 1550; 
-            } else {
-                //go straight
-                pulse_width_1 = 1500; 
-                pulse_width_2 = 1500; 
-                radar_state = PARK;
-            }
-        break;
-        case PARK:
-        read_IRSensor();
-            if(IRSensorReading != 15){
-                pulse_width_1 = 1500; 
-                pulse_width_2 = 1500;
-                radar_state = RADAR_IDLE;
-            }
-        break;
-    }
+    while((ECHO_PORT->IDR & (1<< ECHO_PIN))); //wait for echo to go low or timeout
+
+    uint32_t end = TIM5->CNT;
+
+    //calculate echo width
+    uint32_t echoWidth = (end >= start) ? (end - start) : ((0xFFFFFFFF - start) + end);
+    return (int) echoWidth * .01715; //distance in cm
 }
-*/
+/*
+int scan_decision(void){
+    pulse_width_1 = 1560;
+    delay_ms(300);
+    pulse_width_1 = 1500;
+    int left = measure();
+
+    pulse_width_1 = 1450;
+    delay_ms(600);
+    pulse_width_1 = 1500;
+    int right = measure();
+
+    if(right>left) return 1; //turn right
+    if(left>right)return 2; //turn left
+    else return 0; //go straight
+}*/
+
 void read_IRSensor(void){
     IRSensorReading = GPIOC->IDR & 0x0F; // Read PC0-PC3
 }
@@ -311,7 +311,7 @@ void IR_cases(int sensor){
                 pulse_width_1 = 1500; 
                 pulse_width_2 = 1500; 
                 pause = true;
-                //phase = 1;
+                phase = 1;
                 //radar_state = RADAR_TRIGGER;
             break;
         case 14: //left
@@ -357,14 +357,13 @@ void IR_cases(int sensor){
 }
 
 void SysTick_Handler(void){
-    //if (phase == 0) {// Line following mode
+    if (phase == 0) {// Line following mode
         read_IRSensor();
         IR_cases(IRSensorReading);
-    /*} else if (phase == 1) {// Ultrasonic radar mode
-        radar_update();
-    }*/
+    }
     TIM8->CCR3 = pulse_width_1; // Update servo 3 pulse width
     TIM8->CCR4 = pulse_width_2; // Update servo 4 pulse width
+    //TIM3->CCR1 = pulse_width; // Update servo 1 pulse width
 }
 
 int main(void) {
@@ -374,12 +373,77 @@ int main(void) {
     SSD_init();
 	UART2_Init();
 	btn_init();
+    //EXTI0_init();
 	PWM_Output_PC6_PC8_Init();
     PWM_Output_PC6_Init();
     TIM2_init();
     TIM5_INIT();
     Sensor_Init();
 	while (1) {
+        read_IRSensor();
+    if(phase == 1){
+    switch(state){
+        case STATE_LINE:
+            if (IRSensorReading == 15) {
+                // end of line
+                pulse_width_1 = 1500;
+                pulse_width_2 = 1500;
+                state = STATE_SCAN_RIGHT;
+                delay_ms(300);
+            } 
+            else {
+                IR_cases(IRSensorReading);
+            }
+            break;
+
+        case STATE_SCAN_RIGHT:
+            // point servo right
+            servo_angle_set(45);
+            //pulse_width = 1450;  // adjust range as needed
+            delay_ms(200);
+            right_distance = measure();
+            state = STATE_SCAN_LEFT;
+            break;
+
+        case STATE_SCAN_LEFT:
+            // point servo left
+            servo_angle_set(-45);
+            //pulse_width = 1550;
+            delay_ms(200);
+            left_distance = measure();
+            state = STATE_DECIDE;
+            break;
+
+        case STATE_DECIDE:
+            if (right_distance > left_distance) {
+                state = STATE_TURN;
+                direction = 1;  // 1 = right
+            } else {
+                state = STATE_TURN;
+                direction = 2;  // 2 = left
+            }
+            break;
+
+        case STATE_TURN:
+            if (direction == 1) {
+                pulse_width_1 = 1410;
+                pulse_width_2 = 1500;
+            } else {
+                pulse_width_1 = 1500;
+                pulse_width_2 = 1570;
+            }
+
+            delay_ms(400);
+
+            pulse_width_1 = 1500;
+            pulse_width_2 = 1500;
+
+            delay_ms(400);
+
+            state = STATE_LINE;
+            break;
+    }
+    }
         //radar_update();
 	}
 }
