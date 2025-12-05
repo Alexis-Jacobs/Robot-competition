@@ -366,6 +366,21 @@ int main(void) {
     TIM2_init();
     TIM5_INIT();
     Sensor_Init();
+    //PA4 TRIG
+    GPIOA->MODER &= ~(3 << (TRIG_PIN*2)); //clear mode bits
+    GPIOA->MODER |= (1 << (TRIG_PIN * 2)); // PA4 as output
+    GPIOA->PUPDR &= ~(3 << (TRIG_PIN*2)); //clear pull-up, pull-down
+    GPIOA->PUPDR |= (0 << (TRIG_PIN*2)); //no pull-up, pull-down
+
+    GPIOB->MODER &= ~(3<<ECHO_PIN); //PB0 as input
+    //EXTI->IMR |= (1<<ECHO_PIN); //unmask interrupt for EXTI0
+    //EXTI->RTSR |= (1<<ECHO_PIN); //trigger on rising edge
+    //EXTI->FTSR |= (1<<ECHO_PIN); //trigger on falling edge
+   // SYSCFG->EXTICR[0] &= ~(0xF<<0); //clear EXTI0 bits
+    //SYSCFG->EXTICR[0] |= (1<<0); //map EXTI0 to PB0
+    GPIOB->PUPDR &= ~(3<< (ECHO_PIN*2)); //clear pull-up, pull-down
+    GPIOB->PUPDR |= (2<< (ECHO_PIN*2)); //pull-down on PB0
+    //NVIC_EnableIRQ(EXTI0_IRQn); //enable EXTI0 interrupt in NVIC
     bool checked_right = false;
     bool checked_left = false;
     bool has_turned = false;
@@ -391,7 +406,7 @@ int main(void) {
             // point servo right
             servo_angle_set(45);
             //pulse_width = 1450;  // adjust range as needed
-            delay_ms(200); //pause for servo to reach position
+            delay_ms(500); //pause for servo to reach position
             measure();
             right_distance = distance;//measure();
             checked_right = true;
@@ -404,7 +419,7 @@ int main(void) {
             // point servo left
             servo_angle_set(-45);
             //pulse_width = 1550;
-            delay_ms(200);
+            delay_ms(500);
             measure();
             left_distance = distance;//measure();
             checked_left = true;
@@ -432,19 +447,23 @@ int main(void) {
         case STATE_TURN:
         //if(has_turned == false){
             if (direction == 1) {
-                pulse_width_1 = 1410;
-                pulse_width_2 = 1500;
-            } else if (direction == 2){
+                /*pulse_width_1 = 1410;
+                pulse_width_2 = 1500;*/
                 pulse_width_1 = 1500;
                 pulse_width_2 = 1570;
+            } else if (direction == 2){
+                /*pulse_width_1 = 1500;
+                pulse_width_2 = 1570;*/
+                pulse_width_1 = 1410;
+                pulse_width_2 = 1500;
             }
 
-            delay_ms(270);
+            delay_ms(1365);
 
             pulse_width_1 = 1415.20; 
             pulse_width_2 = 1570;
 
-            delay_ms(1200);
+            delay_ms(5000);
 
             state = STOP;
             break;
